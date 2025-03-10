@@ -584,7 +584,7 @@ async def format_recipe_response(suggestions: dict) -> List[str]:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "server:app",
+        app,  # Use app directly instead of string path
         host="0.0.0.0",
         port=8000,
         reload=True,

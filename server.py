@@ -45,8 +45,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Add these constants at the top of the file after imports
-BASE_URL = "http://localhost:8000"  # Development
-# BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")  # Production
+#BASE_URL = "http://localhost:8000"  # Development
+BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")  # Production
 
 # Initialize FastAPI and Groq client
 @asynccontextmanager

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import attrs
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 import groq
 import os
 import logging
@@ -391,18 +391,24 @@ import cattrs
 # Configure cattrs for FastAPI integration
 converter = cattrs.Converter()
 
-# Update the endpoint handlers
-@app.post("/api/v1/analyze-meal", response_model=None)
-async def analyze_meal_endpoint(request: MealRequest):
+# Update the endpoint handlers with proper response models
+@attrs.define
+class APIResponse:
+    data: Any
+    metadata: Dict[str, Any]
+
+@app.post("/api/v1/analyze-meal")
+async def analyze_meal_endpoint(request: Dict[str, Any]):
     """Analyze meal nutrition"""
     try:
+        meal_request = MealRequest(meal_description=request["meal_description"])
         request_id = str(uuid.uuid4())
-        logger.info(f"Analyzing meal request {request_id}: {request.meal_description}")
+        logger.info(f"Analyzing meal request {request_id}: {meal_request.meal_description}")
 
-        analysis_data = await create_meal_analysis(request.meal_description)
+        analysis_data = await create_meal_analysis(meal_request.meal_description)
         
-        response = AnalysisResponse(
-            analysis=analysis_data,
+        response = APIResponse(
+            data=analysis_data,
             metadata={
                 "request_id": request_id,
                 "model": "mixtral-8x7b-32768",
@@ -412,12 +418,6 @@ async def analyze_meal_endpoint(request: MealRequest):
         
         return converter.unstructure(response)
 
-    except ValueError as e:
-        logger.error(f"Value error: {str(e)}")
-        raise HTTPException(
-            status_code=422, 
-            detail="Could not generate valid nutrition analysis"
-        )
     except Exception as e:
         logger.error(f"Error analyzing meal: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -425,29 +425,26 @@ async def analyze_meal_endpoint(request: MealRequest):
             detail="Internal server error during analysis"
         )
 
-# Update the suggest_recipes_endpoint
-@app.post("/api/v1/suggest-recipes", response_model=RecipeResponse)
-async def suggest_recipes_endpoint(request: RecipeRequest):
+@app.post("/api/v1/suggest-recipes")
+async def suggest_recipes_endpoint(request: Dict[str, Any]):
     """Suggest recipes based on ingredients"""
     try:
+        recipe_request = RecipeRequest(ingredients=request["ingredients"])
         request_id = str(uuid.uuid4())
-        logger.info(f"Recipe request {request_id}: {request.ingredients}")
-
-        suggestions_json = await create_recipe_suggestions(request.ingredients)
         
-        # Parse JSON into RecipeSuggestions model
-        suggestions = RecipeSuggestions.model_validate(suggestions_json)
+        suggestions = await create_recipe_suggestions(recipe_request.ingredients)
         
-        return {
-            "suggestions": suggestions,
-            "metadata": {
+        response = APIResponse(
+            data=suggestions,
+            metadata={
                 "request_id": request_id,
-                "ingredients": request.ingredients,
-                "model": "mixtral-8x7b-32768",
+                "ingredients": recipe_request.ingredients,
                 "timestamp": datetime.utcnow().isoformat()
             }
-        }
-
+        )
+        
+        return converter.unstructure(response)
+        
     except Exception as e:
         logger.error(f"Error suggesting recipes: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-import attrs
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel
+from typing import List, Optional
 import groq
 import os
 import logging
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # Add these constants at the top of the file after imports
 #BASE_URL = "http://localhost:8000"  # Development
-BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")  # Production
+BASE_URL = os.getenv("API_BASE_URL")  # Production
 
 # Initialize FastAPI and Groq client
 @asynccontextmanager
@@ -131,20 +131,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Replace Pydantic models with attrs models
-@attrs.define
-class MealRequest:
+# Pydantic models
+class MealRequest(BaseModel):
     meal_description: str
 
-@attrs.define
-class NutritionInfo:
+class RecipeRequest(BaseModel):
+    ingredients: List[str]
+
+class AnalysisResponse(BaseModel):
+    analysis: dict
+    metadata: dict
+
+class NutritionInfo(BaseModel):
     calories: int
     protein: str
     carbs: str
     fats: str
 
-@attrs.define
-class QuickMeal:
+class QuickMeal(BaseModel):
     name: str
     cooking_time: int
     difficulty: str
@@ -152,32 +156,20 @@ class QuickMeal:
     instructions: List[str]
     nutrition_info: NutritionInfo
 
-@attrs.define
-class MealPrepIdea:
+class MealPrepIdea(BaseModel):
     name: str
     servings: int
     storage_time: int
     ingredients_needed: List[str]
     instructions: List[str]
 
-@attrs.define
-class RecipeSuggestions:
+class RecipeSuggestions(BaseModel):
     quick_meals: List[QuickMeal]
     meal_prep_ideas: List[MealPrepIdea]
 
-@attrs.define
-class RecipeRequest:
-    ingredients: List[str]
-
-@attrs.define
-class AnalysisResponse:
-    analysis: Dict
-    metadata: Dict
-
-@attrs.define
-class RecipeResponse:
+class RecipeResponse(BaseModel):
     suggestions: RecipeSuggestions
-    metadata: Dict
+    metadata: dict
 
 # Update the start command to include command description
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -385,39 +377,30 @@ async def health_check():
         }
     }
 
-# Update FastAPI endpoint to use cattrs for conversion
-import cattrs
-
-# Configure cattrs for FastAPI integration
-converter = cattrs.Converter()
-
-# Update the endpoint handlers with proper response models
-@attrs.define
-class APIResponse:
-    data: Any
-    metadata: Dict[str, Any]
-
-@app.post("/api/v1/analyze-meal")
-async def analyze_meal_endpoint(request: Dict[str, Any]):
+@app.post("/api/v1/analyze-meal", response_model=AnalysisResponse)
+async def analyze_meal_endpoint(request: MealRequest):
     """Analyze meal nutrition"""
     try:
-        meal_request = MealRequest(meal_description=request["meal_description"])
         request_id = str(uuid.uuid4())
-        logger.info(f"Analyzing meal request {request_id}: {meal_request.meal_description}")
+        logger.info(f"Analyzing meal request {request_id}: {request.meal_description}")
 
-        analysis_data = await create_meal_analysis(meal_request.meal_description)
+        analysis_data = await create_meal_analysis(request.meal_description)
         
-        response = APIResponse(
-            data=analysis_data,
-            metadata={
+        return {
+            "analysis": analysis_data,
+            "metadata": {
                 "request_id": request_id,
                 "model": "mixtral-8x7b-32768",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        )
-        
-        return converter.unstructure(response)
+        }
 
+    except ValueError as e:
+        logger.error(f"Value error: {str(e)}")
+        raise HTTPException(
+            status_code=422, 
+            detail="Could not generate valid nutrition analysis"
+        )
     except Exception as e:
         logger.error(f"Error analyzing meal: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -425,26 +408,29 @@ async def analyze_meal_endpoint(request: Dict[str, Any]):
             detail="Internal server error during analysis"
         )
 
-@app.post("/api/v1/suggest-recipes")
-async def suggest_recipes_endpoint(request: Dict[str, Any]):
+# Update the suggest_recipes_endpoint
+@app.post("/api/v1/suggest-recipes", response_model=RecipeResponse)
+async def suggest_recipes_endpoint(request: RecipeRequest):
     """Suggest recipes based on ingredients"""
     try:
-        recipe_request = RecipeRequest(ingredients=request["ingredients"])
         request_id = str(uuid.uuid4())
+        logger.info(f"Recipe request {request_id}: {request.ingredients}")
+
+        suggestions_json = await create_recipe_suggestions(request.ingredients)
         
-        suggestions = await create_recipe_suggestions(recipe_request.ingredients)
+        # Parse JSON into RecipeSuggestions model
+        suggestions = RecipeSuggestions.model_validate(suggestions_json)
         
-        response = APIResponse(
-            data=suggestions,
-            metadata={
+        return {
+            "suggestions": suggestions,
+            "metadata": {
                 "request_id": request_id,
-                "ingredients": recipe_request.ingredients,
+                "ingredients": request.ingredients,
+                "model": "mixtral-8x7b-32768",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        )
-        
-        return converter.unstructure(response)
-        
+        }
+
     except Exception as e:
         logger.error(f"Error suggesting recipes: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -602,5 +588,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
+        workers=1
     )

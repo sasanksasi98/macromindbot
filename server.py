@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+import attrs
+from typing import List, Optional, Dict
 import groq
 import os
 import logging
@@ -131,24 +131,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic models
-class MealRequest(BaseModel):
+# Replace Pydantic models with attrs models
+@attrs.define
+class MealRequest:
     meal_description: str
 
-class RecipeRequest(BaseModel):
-    ingredients: List[str]
-
-class AnalysisResponse(BaseModel):
-    analysis: dict
-    metadata: dict
-
-class NutritionInfo(BaseModel):
+@attrs.define
+class NutritionInfo:
     calories: int
     protein: str
     carbs: str
     fats: str
 
-class QuickMeal(BaseModel):
+@attrs.define
+class QuickMeal:
     name: str
     cooking_time: int
     difficulty: str
@@ -156,20 +152,32 @@ class QuickMeal(BaseModel):
     instructions: List[str]
     nutrition_info: NutritionInfo
 
-class MealPrepIdea(BaseModel):
+@attrs.define
+class MealPrepIdea:
     name: str
     servings: int
     storage_time: int
     ingredients_needed: List[str]
     instructions: List[str]
 
-class RecipeSuggestions(BaseModel):
+@attrs.define
+class RecipeSuggestions:
     quick_meals: List[QuickMeal]
     meal_prep_ideas: List[MealPrepIdea]
 
-class RecipeResponse(BaseModel):
+@attrs.define
+class RecipeRequest:
+    ingredients: List[str]
+
+@attrs.define
+class AnalysisResponse:
+    analysis: Dict
+    metadata: Dict
+
+@attrs.define
+class RecipeResponse:
     suggestions: RecipeSuggestions
-    metadata: dict
+    metadata: Dict
 
 # Update the start command to include command description
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -377,7 +385,14 @@ async def health_check():
         }
     }
 
-@app.post("/api/v1/analyze-meal", response_model=AnalysisResponse)
+# Update FastAPI endpoint to use cattrs for conversion
+import cattrs
+
+# Configure cattrs for FastAPI integration
+converter = cattrs.Converter()
+
+# Update the endpoint handlers
+@app.post("/api/v1/analyze-meal", response_model=None)
 async def analyze_meal_endpoint(request: MealRequest):
     """Analyze meal nutrition"""
     try:
@@ -386,14 +401,16 @@ async def analyze_meal_endpoint(request: MealRequest):
 
         analysis_data = await create_meal_analysis(request.meal_description)
         
-        return {
-            "analysis": analysis_data,
-            "metadata": {
+        response = AnalysisResponse(
+            analysis=analysis_data,
+            metadata={
                 "request_id": request_id,
                 "model": "mixtral-8x7b-32768",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        }
+        )
+        
+        return converter.unstructure(response)
 
     except ValueError as e:
         logger.error(f"Value error: {str(e)}")
@@ -584,7 +601,7 @@ async def format_recipe_response(suggestions: dict) -> List[str]:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "server:app",  # Updated to match flat structure
+        "server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,

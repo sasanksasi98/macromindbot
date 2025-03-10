@@ -2,7 +2,8 @@ fastapi
 python-telegram-bot
 groq
 python-dotenv
-pydantic<2.0
+attrs==23.1.0
+cattrs==23.2.3
 aiohttp
 python-multipart
 typing-extensions

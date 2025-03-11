@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-import attrs
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel
+from typing import List, Optional
 import groq
 import os
 import logging
@@ -45,8 +45,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Add these constants at the top of the file after imports
-#BASE_URL = "http://localhost:8000"  # Development
-BASE_URL = os.getenv("https://splendid-nara-macromind-58110b40.koyeb.app")  # Production
+BASE_URL = ("https://splendid-nara-macromind-58110b40.koyeb.app")  # Development
+#BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")  # Production
 
 # Initialize FastAPI and Groq client
 @asynccontextmanager
@@ -59,10 +59,7 @@ async def lifespan(app: FastAPI):
         # Initialize Telegram bot
         bot_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         
-        # Delete webhook to ensure clean polling
-        await bot_app.bot.delete_webhook(drop_pending_updates=True)
-        
-        # Set commands description
+        # Set commands description with parameters
         await bot_app.bot.set_my_commands([
             ('start', 'Start the bot'),
             ('analyze', 'Analyze nutrition of a meal'),
@@ -70,77 +67,54 @@ async def lifespan(app: FastAPI):
             ('help', 'Show help guide')
         ])
         
-        # Add handlers with non-blocking configuration
-        bot_app.add_handler(CommandHandler("start", start, block=False))
-        bot_app.add_handler(CommandHandler("help", help_command, block=False))
-        bot_app.add_handler(CommandHandler("analyze", analyze_meal, block=False))
+        # Add handlers
+        bot_app.add_handler(CommandHandler("start", start))
+        bot_app.add_handler(CommandHandler("help", help_command))
+        bot_app.add_handler(CommandHandler("analyze", analyze_meal))
         bot_app.add_handler(CommandHandler(
             "recipe", 
             recipe_command,
             filters=filters.ChatType.PRIVATE,
             block=False
         ))
-        bot_app.add_handler(CallbackQueryHandler(button_callback, block=False))
-        bot_app.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            analyze_meal,
-            block=False
-        ))
+        bot_app.add_handler(CallbackQueryHandler(button_callback))
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_meal))
         
-        # Initialize bot
+        # Start bot in background
         await bot_app.initialize()
+        await bot_app.start()
         
-        # Store bot instance and task
-        app.state.bot = bot_app
-        app.state.bot_running = True
+        # Create polling task
         app.state.bot_task = asyncio.create_task(
             bot_app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30,
-                pool_timeout=30
+                drop_pending_updates=True
             )
         )
         
-        logger.info("Bot services started successfully")
+        # Store bot instance
+        app.state.bot = bot_app
+        
+        logger.info("Services started successfully")
         yield
         
     finally:
-        logger.info("Starting bot services cleanup...")
-        
-        # Stop polling first
-        if hasattr(app.state, 'bot_running'):
-            app.state.bot_running = False
-        
-        # Cancel polling task
+        # Cleanup
         if hasattr(app.state, 'bot_task'):
-            logger.debug("Cancelling polling task...")
             app.state.bot_task.cancel()
             try:
                 await app.state.bot_task
             except asyncio.CancelledError:
-                logger.info("Polling task cancelled successfully")
-            except Exception as e:
-                logger.error(f"Error cancelling polling task: {e}")
+                pass
         
-        # Stop bot
         if hasattr(app.state, 'bot'):
-            logger.debug("Stopping bot application...")
-            try:
-                await app.state.bot.updater.stop()
-                await app.state.bot.stop()
-                await app.state.bot.shutdown()
-            except Exception as e:
-                logger.error(f"Error stopping bot: {e}")
+            await app.state.bot.stop()
+            await app.state.bot.shutdown()
         
-        # Close HTTP client
         if hasattr(app.state, 'http_client'):
-            logger.debug("Closing HTTP client...")
             await app.state.http_client.close()
         
-        logger.info("Bot services cleanup completed")
+        logger.info("Services shutdown completed")
 
 app = FastAPI(
     title="MacroMind API",
@@ -157,20 +131,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Replace Pydantic models with attrs models
-@attrs.define
-class MealRequest:
+# Pydantic models
+class MealRequest(BaseModel):
     meal_description: str
 
-@attrs.define
-class NutritionInfo:
+class RecipeRequest(BaseModel):
+    ingredients: List[str]
+
+class AnalysisResponse(BaseModel):
+    analysis: dict
+    metadata: dict
+
+class NutritionInfo(BaseModel):
     calories: int
     protein: str
     carbs: str
     fats: str
 
-@attrs.define
-class QuickMeal:
+class QuickMeal(BaseModel):
     name: str
     cooking_time: int
     difficulty: str
@@ -178,32 +156,20 @@ class QuickMeal:
     instructions: List[str]
     nutrition_info: NutritionInfo
 
-@attrs.define
-class MealPrepIdea:
+class MealPrepIdea(BaseModel):
     name: str
     servings: int
     storage_time: int
     ingredients_needed: List[str]
     instructions: List[str]
 
-@attrs.define
-class RecipeSuggestions:
+class RecipeSuggestions(BaseModel):
     quick_meals: List[QuickMeal]
     meal_prep_ideas: List[MealPrepIdea]
 
-@attrs.define
-class RecipeRequest:
-    ingredients: List[str]
-
-@attrs.define
-class AnalysisResponse:
-    analysis: Dict
-    metadata: Dict
-
-@attrs.define
-class RecipeResponse:
+class RecipeResponse(BaseModel):
     suggestions: RecipeSuggestions
-    metadata: Dict
+    metadata: dict
 
 # Update the start command to include command description
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -411,39 +377,30 @@ async def health_check():
         }
     }
 
-# Update FastAPI endpoint to use cattrs for conversion
-import cattrs
-
-# Configure cattrs for FastAPI integration
-converter = cattrs.Converter()
-
-# Update the endpoint handlers with proper response models
-@attrs.define
-class APIResponse:
-    data: Any
-    metadata: Dict[str, Any]
-
-@app.post("/api/v1/analyze-meal")
-async def analyze_meal_endpoint(request: Dict[str, Any]):
+@app.post("/api/v1/analyze-meal", response_model=AnalysisResponse)
+async def analyze_meal_endpoint(request: MealRequest):
     """Analyze meal nutrition"""
     try:
-        meal_request = MealRequest(meal_description=request["meal_description"])
         request_id = str(uuid.uuid4())
-        logger.info(f"Analyzing meal request {request_id}: {meal_request.meal_description}")
+        logger.info(f"Analyzing meal request {request_id}: {request.meal_description}")
 
-        analysis_data = await create_meal_analysis(meal_request.meal_description)
+        analysis_data = await create_meal_analysis(request.meal_description)
         
-        response = APIResponse(
-            data=analysis_data,
-            metadata={
+        return {
+            "analysis": analysis_data,
+            "metadata": {
                 "request_id": request_id,
                 "model": "mixtral-8x7b-32768",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        )
-        
-        return converter.unstructure(response)
+        }
 
+    except ValueError as e:
+        logger.error(f"Value error: {str(e)}")
+        raise HTTPException(
+            status_code=422, 
+            detail="Could not generate valid nutrition analysis"
+        )
     except Exception as e:
         logger.error(f"Error analyzing meal: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -451,26 +408,29 @@ async def analyze_meal_endpoint(request: Dict[str, Any]):
             detail="Internal server error during analysis"
         )
 
-@app.post("/api/v1/suggest-recipes")
-async def suggest_recipes_endpoint(request: Dict[str, Any]):
+# Update the suggest_recipes_endpoint
+@app.post("/api/v1/suggest-recipes", response_model=RecipeResponse)
+async def suggest_recipes_endpoint(request: RecipeRequest):
     """Suggest recipes based on ingredients"""
     try:
-        recipe_request = RecipeRequest(ingredients=request["ingredients"])
         request_id = str(uuid.uuid4())
+        logger.info(f"Recipe request {request_id}: {request.ingredients}")
+
+        suggestions_json = await create_recipe_suggestions(request.ingredients)
         
-        suggestions = await create_recipe_suggestions(recipe_request.ingredients)
+        # Parse JSON into RecipeSuggestions model
+        suggestions = RecipeSuggestions.model_validate(suggestions_json)
         
-        response = APIResponse(
-            data=suggestions,
-            metadata={
+        return {
+            "suggestions": suggestions,
+            "metadata": {
                 "request_id": request_id,
-                "ingredients": recipe_request.ingredients,
+                "ingredients": request.ingredients,
+                "model": "mixtral-8x7b-32768",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        )
-        
-        return converter.unstructure(response)
-        
+        }
+
     except Exception as e:
         logger.error(f"Error suggesting recipes: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -623,31 +583,10 @@ async def format_recipe_response(suggestions: dict) -> List[str]:
 
 if __name__ == "__main__":
     import uvicorn
-    import signal
-    import sys
-    
-    def signal_handler(sig, frame):
-        print("\nShutting down gracefully...")
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    # Kill any existing processes
-    os.system("lsof -t -i:8000 | xargs kill -9 2>/dev/null")
-    
-    # Clear webhook
-    import requests
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook",
-        json={"drop_pending_updates": True}
-    )
-    
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="debug",
-        workers=1,
-        timeout_keep_alive=30
+        log_level="info"
     )

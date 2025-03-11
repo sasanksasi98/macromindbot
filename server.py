@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # Add these constants at the top of the file after imports
 #BASE_URL = "http://localhost:8000"  # Development
-BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")  # Production
+BASE_URL = os.getenv("https://splendid-nara-macromind-58110b40.koyeb.app")  # Production
 
 # Initialize FastAPI and Groq client
 @asynccontextmanager
